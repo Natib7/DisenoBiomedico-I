@@ -1,0 +1,86 @@
+// Definición de pines
+const int LM35_PIN = A0;    // Sensor de temperatura LM35
+const int LED_R = 9;        // LED RGB - Rojo
+const int LED_G = 10;       // LED RGB - Verde
+const int LED_B = 11;       // LED RGB - Azul
+const int LED_ALARMA = 6;   // LED rojo de alarma
+const int BUZZER = 5;       // Buzzer
+const int PULSADOR = 7;     // Pulsador para silenciar alarma
+
+// Umbrales de temperatura (en °C)
+const float TEMP_NORMAL = 25.0;
+const float TEMP_MODERADA = 28.0;
+const float TEMP_CRITICA = 30.0;
+
+// Estado de la alarma
+bool alarmaActiva = false;
+
+void setup() {
+    pinMode(LED_R, OUTPUT);
+    pinMode(LED_G, OUTPUT);
+    pinMode(LED_B, OUTPUT);
+    pinMode(LED_ALARMA, OUTPUT);
+    pinMode(BUZZER, OUTPUT);
+    pinMode(PULSADOR, INPUT_PULLUP); // Activamos resistencia pull-up interna
+
+    Serial.begin(9600);
+}
+
+void loop() {
+    // Leer temperatura del LM35
+    float temperatura = leerTemperatura();
+    Serial.print("Temperatura: ");
+    Serial.print(temperatura);
+    Serial.println(" °C");
+
+    // Control del LED RGB según la temperatura
+    if (temperatura < TEMP_MODERADA) {
+        setColor(0, 255, 0); // Verde: Normal
+        alarmaActiva = false;
+    } else if (temperatura < TEMP_CRITICA) {
+        setColor(255, 165, 0); // Amarillo: Moderadamente alta
+        alarmaActiva = false;
+    } else {
+        setColor(255, 0, 0); // Rojo: Crítico
+        alarmaActiva = true;
+    }
+
+    // Activar alarma si la temperatura es crítica
+    if (alarmaActiva) {
+        digitalWrite(LED_ALARMA, HIGH);
+        sonarBuzzer();
+    } else {
+        digitalWrite(LED_ALARMA, LOW);
+        noTone(BUZZER);
+    }
+
+    // Comprobar si el usuario presiona el pulsador para silenciar la alarma
+    if (digitalRead(PULSADOR) == LOW && alarmaActiva) {
+        noTone(BUZZER);
+        delay(5000); // Silencia el buzzer por 5 segundos
+    }
+
+    delay(1000); // Esperar un segundo antes de la siguiente lectura
+}
+
+// Función para leer la temperatura en grados Celsius
+float leerTemperatura() {
+    int lectura = analogRead(LM35_PIN);
+    float voltaje = lectura * (5.0 / 1023.0); // Convertir a voltaje
+    return voltaje * 100.0; // Convertir a °C
+}
+
+// Función para controlar el color del LED RGB
+void setColor(int r, int g, int b) {
+    analogWrite(LED_R, r);
+    analogWrite(LED_G, g);
+    analogWrite(LED_B, b);
+}
+
+// Función para hacer sonar el buzzer intermitentemente
+void sonarBuzzer() {
+    tone(BUZZER, 1000); // Sonido de 1kHz
+    delay(200);
+    noTone(BUZZER);
+    delay(200);
+}
