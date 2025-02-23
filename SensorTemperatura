@@ -1,0 +1,92 @@
+// Definición de pines
+const int LM35_PIN = A0;    // Pin analógico donde está conectado el sensor de temperatura LM35
+const int LED_R = 9;        // Pin PWM del LED RGB - Rojo
+const int LED_G = 10;       // Pin PWM del LED RGB - Verde
+const int LED_B = 11;       // Pin PWM del LED RGB - Azul
+const int LED_ALARMA = 6;   // Pin del LED rojo de alarma
+const int BUZZER = 5;       // Pin del buzzer (alarma sonora)
+const int PULSADOR = 7;     // Pin del pulsador para silenciar la alarma
+
+// Definimos los umbrales de temperatura en grados Celsius
+const float TEMP_NORMAL = 25.0;    // Temperatura considerada normal
+const float TEMP_MODERADA = 28.0;  // Umbral para temperatura moderada
+const float TEMP_CRITICA = 30.0;   // Umbral para activar la alarma
+
+// Variable booleana para controlar el estado de la alarma
+bool alarmaActiva = false;
+
+void setup() {
+    // Configuración de los pines de salida para controlar los LEDs y el buzzer
+    pinMode(LED_R, OUTPUT);
+    pinMode(LED_G, OUTPUT);
+    pinMode(LED_B, OUTPUT);
+    pinMode(LED_ALARMA, OUTPUT);
+    pinMode(BUZZER, OUTPUT);
+
+    // Configuración del pulsador como entrada con resistencia pull-up interna activada
+    pinMode(PULSADOR, INPUT_PULLUP);
+
+    // Iniciar la comunicación serie para visualizar la temperatura en el monitor serie
+    Serial.begin(9600);
+}
+
+void loop() {
+    // Leer la temperatura del sensor LM35
+    float temperatura = leerTemperatura();
+
+    // Mostrar la temperatura en el monitor serie para hacer seguimiento de los valores
+    Serial.print("Temperatura: ");
+    Serial.print(temperatura);
+    Serial.println(" °C");
+
+    // Control del LED RGB según la temperatura detectada
+    if (temperatura < TEMP_MODERADA) {
+        setColor(0, 255, 0); // Verde: Temperatura normal (por debajo de 28°C)
+        alarmaActiva = false; // La alarma no debe activarse en este caso
+    } else if (temperatura < TEMP_CRITICA) {
+        setColor(255, 165, 0); // Amarillo: Temperatura moderadamente alta (entre 28°C y 30°C)
+        alarmaActiva = false; // La alarma tampoco se activa en este caso
+    } else {
+        setColor(255, 0, 0); // Rojo: Temperatura crítica (mayor a 30°C)
+        alarmaActiva = true; // Se activa la alarma
+    }
+
+    // Activar la alarma si la temperatura es crítica
+    if (alarmaActiva) {
+        digitalWrite(LED_ALARMA, HIGH); // Encender LED rojo de alarma
+        sonarBuzzer(); // Hacer sonar el buzzer intermitentemente
+    } else {
+        digitalWrite(LED_ALARMA, LOW); // Apagar LED rojo
+        noTone(BUZZER); // Asegurarse de que el buzzer esté apagado
+    }
+
+    // Comprobar si el usuario presiona el pulsador para silenciar la alarma
+    if (digitalRead(PULSADOR) == LOW && alarmaActiva) {
+        noTone(BUZZER); // Apagar el buzzer cuando el botón es presionado
+        delay(5000); // Mantener la alarma desactivada por 5 segundos
+    }
+
+    delay(1000); // Esperar un segundo antes de la siguiente lectura para evitar lecturas muy rápidas
+}
+
+// Función para leer la temperatura en grados Celsius a partir del sensor LM35
+float leerTemperatura() {
+    int lectura = analogRead(LM35_PIN); // Leer el valor analógico del sensor
+    float voltaje = lectura * (5.0 / 1023.0); // Convertir el valor a voltaje (rango de 0 a 5V)
+    return voltaje * 100.0; // Convertir el voltaje en temperatura (según la relación del LM35)
+}
+
+// Función para controlar el color del LED RGB
+void setColor(int r, int g, int b) {
+    analogWrite(LED_R, r); // Ajustar la intensidad del canal rojo
+    analogWrite(LED_G, g); // Ajustar la intensidad del canal verde
+    analogWrite(LED_B, b); // Ajustar la intensidad del canal azul
+}
+
+// Función para hacer sonar el buzzer de manera intermitente
+void sonarBuzzer() {
+    tone(BUZZER, 1000); // Generar un sonido de 1kHz en el buzzer
+    delay(200); // Mantener el sonido por 200 milisegundos
+    noTone(BUZZER); // Apagar el sonido
+    delay(200); // Esperar 200 milisegundos antes de repetir
+}
