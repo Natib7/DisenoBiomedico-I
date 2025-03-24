@@ -1,0 +1,57 @@
+// Definición de pines
+const int sensorPin = A0;    // Pin analógico donde está conectado el LM35
+const int redPin = 9;        // Pin PWM para el LED rojo
+const int greenPin = 10;     // Pin PWM para el LED verde
+const int bluePin = 11;      // Pin PWM para el LED azul
+const int relayPin = 7;      // Pin digital para el relé
+
+// Umbrales de temperatura
+const float tempThreshold = 30.0;  // Temperatura límite para activar el ventilador
+
+void setup() {
+    Serial.begin(9600);       // Iniciar comunicación serial
+    pinMode(redPin, OUTPUT);
+    pinMode(greenPin, OUTPUT);
+    pinMode(bluePin, OUTPUT);
+    pinMode(relayPin, OUTPUT);
+}
+
+void loop() {
+    // Lectura del sensor LM35
+    int sensorValue = analogRead(sensorPin);
+    float voltage = sensorValue * (5.0 / 1023.0);
+    float temperature = voltage * 100.0; // Conversión a °C
+
+    // Mostrar la temperatura en el monitor serial
+    Serial.print("Temperatura: ");
+    Serial.print(temperature);
+    Serial.println(" °C");
+
+    // Control del LED RGB según la temperatura
+    if (temperature < 25.0) { 
+    setColor(0, 255, 0);  // Verde (Temperatura baja)
+} else if (temperature >= 25.0 && temperature < 30.0) { 
+    setColor(255, 255, 0); // Amarillo (Temperatura moderada)
+} else { 
+    setColor(255, 0, 0);  // Rojo (Temperatura alta)
+}
+
+
+    // Control del relé y ventilador
+    if (temperature >= tempThreshold) {
+        digitalWrite(relayPin, HIGH); // Activar ventilador
+        Serial.println("Ventilador ENCENDIDO");
+    } else {
+        digitalWrite(relayPin, LOW);  // Apagar ventilador
+        Serial.println("Ventilador APAGADO");
+    }
+
+    delay(1000);  // Esperar 1 segundo antes de la siguiente lectura
+}
+
+// Función para controlar el color del LED RGB
+void setColor(int red, int green, int blue) {
+    analogWrite(redPin, 255 - red);
+    analogWrite(greenPin, 255 - green);
+    analogWrite(bluePin, 255 - blue);
+}
