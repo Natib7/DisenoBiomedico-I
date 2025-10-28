@@ -1,0 +1,51 @@
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+
+MAX30105 particleSensor;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  Serial.println("Iniciando sensor MAX30102...");
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("❌ No se detecta el sensor MAX30102. Verifica las conexiones.");
+    while (1);
+  }
+
+  // Configuración básica del sensor
+  particleSensor.setup(); // Configuración por defecto: LED rojo y IR encendidos
+  particleSensor.setPulseAmplitudeRed(0x1F);  // Intensidad LED rojo
+  particleSensor.setPulseAmplitudeIR(0x1F);   // Intensidad LED infrarrojo
+  particleSensor.setPulseAmplitudeGreen(0);   // Desactiva LED verde (no lo tiene el MAX30102)
+
+  Serial.println("✅ Sensor MAX30102 iniciado correctamente");
+}
+
+void loop() {
+  long irValue = particleSensor.getIR();
+  long redValue = particleSensor.getRed();
+
+  Serial.print("IR: ");
+  Serial.print(irValue);
+  Serial.print("  |  Red: ");
+  Serial.print(redValue);
+
+  // Detección simple de pulso
+  if (checkForBeat(irValue)) {
+    static unsigned long lastBeat = 0;
+    unsigned long delta = millis() - lastBeat;
+    lastBeat = millis();
+
+    float bpm = 60.0 / (delta / 1000.0);
+    Serial.print("  ❤️ Frecuencia cardíaca: ");
+    Serial.print(bpm);
+    Serial.println(" bpm");
+  } else {
+    Serial.println();
+  }
+
+  delay(50);
+}
