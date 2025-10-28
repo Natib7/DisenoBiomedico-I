@@ -1,84 +1,72 @@
-#include <Wire.h>
-#include "MAX30105.h"
-#include "spo2_algorithm.h"
+#include <Wire.h>               // Comunicación I2C
+#include "MAX30105.h"           // Librería del sensor MAX30102/MAX30105
+#include "heartRate.h"          // Librería auxiliar para cálculo de FC
 
-MAX30105 particleSensor;
-
-// --- Pines del sistema ---
-const int tempPin = 34; // Pin analógico para el LM35
-
-// --- Variables ---
-float temperatureC = 0.0;
-float irBuffer[100];   // Datos de IR del sensor
-float redBuffer[100];  // Datos de LED rojo
-int bufferLength = 100;
-int32_t spo2;          // Saturación de oxígeno
-int8_t validSPO2;
-int32_t heartRate;     // Frecuencia cardíaca
-int8_t validHeartRate;
+MAX30105 particleSensor;        // Objeto del sensor óptico
+const int lm35Pin = 34;         // Pin analógico donde se conecta el LM35
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200);         // Inicializa el monitor serial
+  Wire.begin();                 // Inicializa la comunicación I2C
+
   Serial.println("Iniciando brazalete biomédico...");
 
-  // Inicializar comunicación I2C
-  Wire.begin();
-
-  // Inicializar MAX30102
+  // --- Inicialización del sensor MAX30102 ---
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
-    Serial.println("No se detecta el sensor MAX30102. Verifique las conexiones.");
-    while (1);
+    Serial.println("No se detecta el sensor MAX30102. Verifica conexiones SDA/SCL (21/22).");
+    while (1);  // Detiene el programa si el sensor no se detecta
   }
-  Serial.println("Sensor MAX30102 detectado correctamente.");
+  Serial.println("MAX30102 detectado correctamente.");
 
-  // Configuración básica del MAX30102
-  particleSensor.setup(); 
-  particleSensor.setPulseAmplitudeRed(0x1F);  // Intensidad LED rojo
-  particleSensor.setPulseAmplitudeIR(0x1F);   // Intensidad LED IR
-  particleSensor.setSampleRate(100);          // Frecuencia de muestreo
-  particleSensor.setLEDMode(2);               // Usa ambos LEDs
+  // Configuración del MAX30102
+  // (se ajusta para lectura de pulso y SpO₂)
+  particleSensor.setup();              
+  particleSensor.setPulseAmplitudeRed(0x0A);    // LED rojo baja intensidad
+  particleSensor.setPulseAmplitudeIR(0x0A);     // LED infrarrojo baja intensidad
+  particleSensor.setPulseAmplitudeGreen(0);     // Desactiva el LED verde
 
-  Serial.println("Configuración completada. Iniciando lecturas...\n");
+  Serial.println("Configuración completada. Iniciando mediciones...\n");
 }
 
 void loop() {
-  // --- Leer datos del sensor MAX30102 ---
-  for (byte i = 0; i < bufferLength; i++) {
-    while (particleSensor.available() == false) {
-      particleSensor.check();
-    }
-    redBuffer[i] = particleSensor.getRed();
-    irBuffer[i] = particleSensor.getIR();
-    particleSensor.nextSample();
-  }
+  // LECTURA DE FRECUENCIA CARDÍACA (MAX30102) 
+  long irValue = particleSensor.getIR();    // Señal IR para detección de pulso
 
-  // --- Calcular frecuencia cardíaca y SpO2 ---
-  maxim_heart_rate_and_oxygen_saturation(irBuffer, bufferLength, redBuffer,
-                                         &spo2, &validSPO2, &heartRate, &validHeartRate);
+  if (checkForBeat(irValue) == true) {      // Detecta un latido
+    static unsigned long lastBeat = 0;      // Guarda el tiempo del último latido
+    unsigned long beatTime = millis();      // Tiempo actual
+    int beatInterval = beatTime - lastBeat; // Diferencia entre latidos
+    lastBeat = beatTime;
 
-  // --- Leer temperatura del LM35 ---
-  int rawADC = analogRead(tempPin);
-  float voltage = (rawADC / 4095.0) * 3.3; // Conversión ADC a voltaje (12 bits)
-  temperatureC = voltage * 100.0;          // 10 mV/°C (LM35)
+    // Calcular frecuencia cardíaca (en bpm)
+    float heartRate = 60000.0 / beatInterval;
 
-  // --- Mostrar resultados ---
-  Serial.println("DATOS DEL BRAZALETE");
-  if (validHeartRate && validSPO2) {
     Serial.print("Frecuencia cardíaca: ");
     Serial.print(heartRate);
     Serial.println(" bpm");
-
-    Serial.print("Saturación de oxígeno (SpO₂): ");
-    Serial.print(spo2);
-    Serial.println(" %");
-  } else {
-    Serial.println("Señal inestable. Coloque bien el sensor en el dedo.");
   }
 
+  // LECTURA DE TEMPERATURA CORPORAL (LM35) 
+  // LM35 entrega 10 mV por cada grado Celsius
+  int rawValue = analogRead(lm35Pin);
+  float voltage = (rawValue / 4095.0) * 3.3;  // Convierte lectura ADC a voltaje
+  float tempC = voltage * 100.0;              // Convierte voltaje a °C (1V ≈ 100°C)
+
   Serial.print("Temperatura corporal: ");
-  Serial.print(temperatureC, 1);
+  Serial.print(tempC);
   Serial.println(" °C");
 
-  Serial.println("-------------------------------");
-  delay(2000);
+  // CONDICIÓN DE ALERTA 
+  // Si la temperatura supera 38°C o no se detecta pulso IR (sensor desconectado),
+  // se muestra una alerta en el monitor.
+  if (tempC > 38.0) {
+    Serial.println("Alerta: Temperatura elevada detectada (>38 °C)");
+  }
+
+  if (irValue < 50000) {
+    Serial.println("Advertencia: dedo no detectado o mala lectura del sensor óptico.");
+  }
+
+  Serial.println("--------------------------------------");
+  delay(1000);  // Espera 1 segundo antes de la siguiente medición
 }
