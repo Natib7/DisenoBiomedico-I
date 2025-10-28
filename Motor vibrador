@@ -1,0 +1,17 @@
+const int motorPin = 25; // Pin IN del módulo
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(motorPin, OUTPUT);
+  Serial.println("✅ Módulo de vibración conectado correctamente");
+}
+
+void loop() {
+  Serial.println("🟢 Vibrando...");
+  digitalWrite(motorPin, HIGH);  // Activa vibración
+  delay(1000);
+
+  Serial.println("⚪ Detenido...");
+  digitalWrite(motorPin, LOW);   // Detiene vibración
+  delay(1000);
+}
