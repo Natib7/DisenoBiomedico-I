@@ -1,0 +1,84 @@
+#include <Wire.h>                   // Librería para comunicación I2C
+#include <Adafruit_MPU6050.h>       // Librería del sensor MPU6050
+#include <Adafruit_Sensor.h>        // Librería base para sensores Adafruit
+#include <Adafruit_BMP280.h>        // Librería del barómetro BMP280
+
+Adafruit_MPU6050 mpu;   // Objeto del sensor de movimiento
+Adafruit_BMP280 bmp;    // Objeto del sensor de presión/altitud
+
+Pines del sistema
+const int motorPin = 25;   // Pin del ESP32 conectado al módulo vibrador
+
+// CONFIGURACIÓN INICIAL
+
+void setup() {
+  Serial.begin(115200);  // Inicia la comunicación serial para ver datos en el monitor
+  Wire.begin();           // Inicializa la comunicación I2C (SDA y SCL)
+
+  pinMode(motorPin, OUTPUT);   // Configura el pin del vibrador como salida
+  digitalWrite(motorPin, LOW); // Asegura que inicie apagado
+
+  Serial.println("🔹 Iniciando tobillera biomédica...");
+
+  // --- Inicializar el sensor MPU6050 ---
+  if (!mpu.begin()) { // Si no se detecta el sensor, muestra error y se detiene
+    Serial.println("No se detecta el sensor MPU6050. Verifica conexiones SDA/SCL (21/22).");
+    while (1); // Detiene el programa
+  }
+  Serial.println("MPU6050 detectado correctamente.");
+
+  // --- Inicializar el sensor BMP280 ---
+  if (!bmp.begin(0x76)) { // Dirección I2C común del BMP280
+    Serial.println("No se detecta el sensor BMP280.");
+    while (1);
+  }
+  Serial.println("BMP280 detectado correctamente.");
+
+  // --- Configuración del BMP280 ---
+  bmp.setSampling(
+    Adafruit_BMP280::MODE_NORMAL,     // Modo de funcionamiento continuo
+    Adafruit_BMP280::SAMPLING_X2,     // Precisión media para temperatura
+    Adafruit_BMP280::SAMPLING_X16,    // Alta precisión para presión
+    Adafruit_BMP280::FILTER_X16,      // Filtro para reducir ruido
+    Adafruit_BMP280::STANDBY_MS_500   // Tiempo entre lecturas
+  );
+
+  Serial.println("Configuración completada. Iniciando mediciones...\n");
+}
+
+void loop() {
+  // LECTURA DE MOVIMIENTO Y CADENCIA
+
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);  // Obtiene los valores medidos
+
+  // Estimación simple de la cadencia en pasos/minuto
+  // (usamos la magnitud del eje Y como referencia)
+  float cadencia = abs(a.acceleration.y) * 10;
+  Serial.print("Cadencia estimada: ");
+  Serial.print(cadencia, 1);
+  Serial.println(" pasos/min");
+
+  // LECTURA DE ALTITUD Y PRESIÓN 
+  float presion = bmp.readPressure() / 100.0F;  // Presión en hPa
+  float altitud = bmp.readAltitude(1013.25);    // Altitud relativa al nivel del mar (en m)
+
+  Serial.print("Presión: ");
+  Serial.print(presion);
+  Serial.print(" hPa | Altitud estimada: ");
+  Serial.print(altitud, 1);
+  Serial.println(" m");
+
+  // RETROALIMENTACIÓN HÁPTICA
+  // - la cadencia baja de 50 pasos/min (poca actividad)
+  // - o la altitud supera los 2000 m (mayor esfuerzo)
+  if (cadencia < 50 || altitud > 2000) {
+    digitalWrite(motorPin, HIGH);  // Enciende el motor
+    Serial.println("Vibración activada (cadencia baja o altitud elevada)");
+  } else {
+    digitalWrite(motorPin, LOW);   // Apaga el motor
+  }
+
+  Serial.println("--------------------------------------");
+  delay(2000);  // Espera 2 segundos antes de la siguiente medición
+}
