@@ -8,29 +8,29 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(21, 22); // Pines SDA y SCL del ESP32
 
-  Serial.println("🔍 Escaneando dispositivos I2C...");
+  Serial.println("Escaneando dispositivos I2C...");
   byte count = 0;
   for (byte i = 1; i < 127; i++) {
     Wire.beginTransmission(i);
     if (Wire.endTransmission() == 0) {
-      Serial.print("✅ Dispositivo encontrado en dirección 0x");
+      Serial.print("Dispositivo encontrado en dirección 0x");
       Serial.println(i, HEX);
       count++;
     }
   }
 
   if (count == 0) {
-    Serial.println("❌ No se detectó ningún dispositivo I2C");
+    Serial.println("No se detectó ningún dispositivo I2C");
   }
 
   Serial.println("Intentando inicializar MPU6050...");
 
   if (!mpu.begin(0x68)) {
-    Serial.println("❌ No se detecta el sensor MPU6050 (verifica SDA/SCL o 3.3V)");
+    Serial.println("No se detecta el sensor MPU6050 (verifica SDA/SCL o 3.3V)");
     while (1);
   }
 
-  Serial.println("✅ Sensor MPU6050 detectado correctamente 🎉");
+  Serial.println("Sensor MPU6050 detectado correctamente");
 }
 
 void loop() {
