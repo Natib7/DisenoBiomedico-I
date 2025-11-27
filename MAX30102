@@ -11,7 +11,7 @@ void setup() {
   Serial.println("Iniciando sensor MAX30102...");
 
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
-    Serial.println("❌ No se detecta el sensor MAX30102. Verifica las conexiones.");
+    Serial.println("No se detecta el sensor MAX30102. Verifica las conexiones.");
     while (1);
   }
 
@@ -21,7 +21,7 @@ void setup() {
   particleSensor.setPulseAmplitudeIR(0x1F);   // Intensidad LED infrarrojo
   particleSensor.setPulseAmplitudeGreen(0);   // Desactiva LED verde (no lo tiene el MAX30102)
 
-  Serial.println("✅ Sensor MAX30102 iniciado correctamente");
+  Serial.println("Sensor MAX30102 iniciado correctamente");
 }
 
 void loop() {
@@ -40,7 +40,7 @@ void loop() {
     lastBeat = millis();
 
     float bpm = 60.0 / (delta / 1000.0);
-    Serial.print("  ❤️ Frecuencia cardíaca: ");
+    Serial.print("Frecuencia cardíaca: ");
     Serial.print(bpm);
     Serial.println(" bpm");
   } else {
