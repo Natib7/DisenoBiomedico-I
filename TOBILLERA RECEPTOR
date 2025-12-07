@@ -1,0 +1,152 @@
+#include <WiFi.h>
+#include <esp_now.h>
+
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_MPU6050.h>
+
+// ====== OBJETOS DE LOS SENSORES ======
+Adafruit_BMP280 bmp;       // Barómetro y altímetro
+Adafruit_MPU6050 mpu;      // IMU de movimiento (acelerómetro + giroscopio)
+
+// ====== PIN DEL MOTOR VIBRADOR ======
+const int motorPin = 25;   // Pin digital conectado a IN del módulo vibrador
+
+// ====== VARIABLES DE REFERENCIA ======
+float altitudBase = 0;     // Altitud inicial (referencia)
+bool calibrado = false;
+
+// ====== MAC DEL BRAZALETE (RECEPTOR) ======
+uint8_t macBrazalete[] = {0xB0, 0xB2, 0x1C, 0xA8, 0xFF, 0xB8};
+
+// ====== ESTRUCTURA DE DATOS A ENVIAR ======
+typedef struct __attribute__((packed)) {
+  float cadencia;
+  float presion;
+  float altitud;
+  float deltaAltitud;
+} TobilleraData;
+
+TobilleraData dato;
+
+// Opcional: callback de envío para debug
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("ESP-NOW envío a ");
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac_addr[0], mac_addr[1], mac_addr[2],
+           mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print(macStr);
+  Serial.print(" -> ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "ÉXITO" : "FALLO");
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  pinMode(motorPin, OUTPUT);
+  digitalWrite(motorPin, LOW);
+
+  Serial.println("🔧 Iniciando sensores...");
+
+  // --- Inicializar MPU6050 ---
+  if (!mpu.begin()) {
+    Serial.println("❌ No se detecta el sensor MPU6050. Verifica conexiones SDA/SCL.");
+    while (1);
+  }
+
+  // --- Inicializar BMP280 ---
+  if (!bmp.begin(0x76)) {   // Algunas placas usan 0x77
+    Serial.println("❌ No se detecta el sensor BMP280. Revisa la dirección I2C.");
+    while (1);
+  }
+
+  // --- Configurar IMU ---
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  // --- Mensaje de éxito ---
+  Serial.println("✅ Tobillera inicializada correctamente.");
+  Serial.println("Mantén el dispositivo quieto unos segundos para calibrar altitud base...");
+
+  delay(2000);
+  altitudBase = bmp.readAltitude(1013.25);
+  calibrado = true;
+  Serial.print("Altitud base registrada: ");
+  Serial.print(altitudBase, 2);
+  Serial.println(" m");
+
+  // ====== INICIALIZAR ESP-NOW COMO EMISOR ======
+  WiFi.mode(WIFI_STA);  // Requerido por ESP-NOW
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("❌ Error iniciando ESP-NOW");
+    return;
+  }
+
+  // Registrar callback de envío (opcional)
+  esp_now_register_send_cb(onDataSent);
+
+  // Registrar al brazalete como peer
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, macBrazalete, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("❌ Error añadiendo peer (brazalete)");
+  } else {
+    Serial.println("✅ Peer (brazalete) añadido a ESP-NOW");
+  }
+}
+
+void loop() {
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  // --- Cálculo de cadencia simulada (basada en movimiento del eje Y) ---
+  float cadencia = abs(a.acceleration.y) * 10; // pasos por minuto aprox
+  Serial.print("Cadencia estimada: ");
+  Serial.print(cadencia, 1);
+  Serial.println(" pasos/min");
+
+  // --- Lectura del barómetro ---
+  float presion = bmp.readPressure() / 100.0;          // hPa
+  float altitud = bmp.readAltitude(1013.25);           // m
+  float deltaAltitud = altitud - altitudBase;          // diferencia respecto al inicio
+
+  Serial.print("Presión: ");
+  Serial.print(presion);
+  Serial.print(" hPa | Altitud actual: ");
+  Serial.print(altitud, 2);
+  Serial.print(" m | Diferencia: ");
+  Serial.print(deltaAltitud, 2);
+  Serial.println(" m");
+
+  // --- Control del motor vibrador según desnivel ---
+  if (abs(deltaAltitud) > 2.0) {  // si sube o baja más de 2 m respecto a base
+    digitalWrite(motorPin, HIGH);
+    Serial.println("⚠️ Desnivel detectado -> Vibración activada");
+  } else {
+    digitalWrite(motorPin, LOW);
+  }
+
+  // ====== RELLENAR ESTRUCTURA Y ENVIAR POR ESP-NOW ======
+  dato.cadencia = cadencia;
+  dato.presion = presion;
+  dato.altitud = altitud;
+  dato.deltaAltitud = deltaAltitud;
+
+  esp_err_t result = esp_now_send(macBrazalete, (uint8_t *)&dato, sizeof(dato));
+  if (result == ESP_OK) {
+    Serial.println("📡 Datos enviados al brazalete");
+  } else {
+    Serial.print("❌ Error al enviar datos: ");
+    Serial.println(result);
+  }
+
+  Serial.println("-------------------------------");
+  delay(1000);
+}
