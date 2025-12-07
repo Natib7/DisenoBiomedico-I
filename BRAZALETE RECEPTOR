@@ -1,0 +1,175 @@
+/* BRAZALETE (RECEPTOR) - ESP32
+   - Recibe paquetes ESP-NOW desde la tobillera
+   - Lee MAX30105 (HR, SpO2) y LM35 (temp)
+*/
+
+#include <Wire.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+
+MAX30105 particleSensor;
+const int LM35_PIN = 34;
+
+typedef struct __attribute__((packed)) {
+  uint32_t timestamp;
+  float cadencia;
+  float presion_hPa;
+  float altitud_m;
+  float deltaAlt_m;
+  uint8_t motorOn;
+} TobilleraPacket;
+
+volatile bool nuevoPaquete = false;
+TobilleraPacket ultimoPaquete;
+
+// Firma de callback de recepción según esp-idf v5.x
+void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
+  Serial.print("Paquete recibido desde: ");
+  for (int i = 0; i < 6; i++) {
+    if (i) Serial.print(":");
+    Serial.printf("%02X", info->src_addr[i]);
+  }
+  Serial.print(" | len: ");
+  Serial.println(len);
+
+  if (len == sizeof(TobilleraPacket)) {
+    memcpy((void*)&ultimoPaquete, incomingData, sizeof(TobilleraPacket));
+    nuevoPaquete = true;
+  } else {
+    Serial.println("Tamaño de paquete inesperado. Ignorando.");
+  }
+}
+
+unsigned long lastBeat = 0;
+float beats[10];
+int beatIndex = 0;
+
+void setupMAX30105() {
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("❌ No se detecta MAX30105. Verifica SDA/SCL.");
+    while (1) delay(100);
+  }
+  particleSensor.setup();
+  particleSensor.setPulseAmplitudeRed(0x7F);
+  particleSensor.setPulseAmplitudeIR(0x7F);
+  particleSensor.setPulseAmplitudeGreen(0);
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Serial.println();
+  Serial.println("Brazalete (RECEPTOR) iniciando...");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  Serial.print("MAC RECEPTOR: ");
+  Serial.println(WiFi.macAddress());
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error iniciando ESP-NOW");
+    while (true) delay(100);
+  }
+  esp_err_t rc = esp_now_register_recv_cb(onDataRecv);
+  if (rc != ESP_OK) {
+    Serial.print("esp_now_register_recv_cb fallo: ");
+    Serial.println(rc);
+  }
+
+  setupMAX30105();
+  Serial.println("MAX30105 iniciado.");
+  Serial.println("------------------------------------");
+}
+
+unsigned long lastSensorTime = 0;
+
+void procesarMAXyLM35() {
+  long irValue = particleSensor.getIR();
+  long redValue = particleSensor.getRed();
+
+  Serial.print("IR raw: "); Serial.print(irValue);
+  Serial.print(" | Red raw: "); Serial.println(redValue);
+
+  if (irValue > 1000) {
+    if (checkForBeat(irValue)) {
+      unsigned long currentBeat = millis();
+      if (lastBeat != 0) {
+        unsigned long delta = currentBeat - lastBeat;
+        lastBeat = currentBeat;
+        if (delta > 300 && delta < 2000) {
+          float bpm = 60.0 / (delta / 1000.0);
+          Serial.print("❤️ Frecuencia (brazalete): ");
+          Serial.print(bpm,1);
+          Serial.println(" bpm");
+          beats[beatIndex % 10] = (float)delta;
+          beatIndex++;
+        }
+      } else {
+        lastBeat = currentBeat;
+        Serial.println("🔰 Primer latido (brazalete).");
+      }
+    }
+  } else {
+    Serial.println("⚠️ Sin contacto o señal baja en MAX30105.");
+  }
+
+  if (beatIndex >= 10) {
+    float mean = 0;
+    for (int i = 0; i < 10; i++) mean += beats[i];
+    mean /= 10.0;
+    float sdnn = 0;
+    for (int i = 0; i < 10; i++) sdnn += pow(beats[i] - mean, 2.0);
+    sdnn = sqrt(sdnn / 10.0);
+    Serial.print("💓 HRV (SDNN brazalete): ");
+    Serial.print(sdnn,1);
+    Serial.println(" ms");
+    beatIndex = 0;
+  }
+
+  if (irValue > 0) {
+    float ratio = (float)redValue / (float)irValue;
+    float spo2 = 110.0 - 25.0 * ratio;
+    if (spo2 > 100.0) spo2 = 100.0;
+    if (spo2 < 80.0) spo2 = 80.0;
+    Serial.print("🩸 SpO2 (brazalete): ");
+    Serial.print(spo2,1);
+    Serial.println(" %");
+  }
+
+  int raw = analogRead(LM35_PIN);
+  float voltage = (raw / 4095.0) * 3.3;
+  float tempC = voltage * 100.0;
+  Serial.print("🌡️ Temp (brazalete LM35): ");
+  Serial.print(tempC,1);
+  Serial.println(" °C");
+
+  Serial.println("------------------------------------");
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  if (nuevoPaquete) {
+    TobilleraPacket copia;
+    memcpy(&copia, (const void*)&ultimoPaquete, sizeof(TobilleraPacket));
+    nuevoPaquete = false;
+
+    Serial.println("<<--- Paquete recibido desde TOBILLERA --->>");
+    Serial.print("Timestamp tob: "); Serial.println(copia.timestamp);
+    Serial.print("Cadencia tob: "); Serial.print(copia.cadencia,1); Serial.println(" pasos/min");
+    Serial.print("Presión tob: "); Serial.print(copia.presion_hPa,2); Serial.println(" hPa");
+    Serial.print("Altitud tob: "); Serial.print(copia.altitud_m,2); Serial.println(" m");
+    Serial.print("DeltaAlt tob: "); Serial.print(copia.deltaAlt_m,2); Serial.println(" m");
+    Serial.print("Motor tob: "); Serial.println(copia.motorOn ? "ON" : "OFF");
+    Serial.println("------------------------------------");
+  }
+
+  if (now - lastSensorTime >= 200) {
+    lastSensorTime = now;
+    procesarMAXyLM35();
+  }
+
+  delay(10);
+}
