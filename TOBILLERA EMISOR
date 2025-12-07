@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>   // Para el tipo wifi_tx_info_t
 
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -21,7 +22,7 @@ bool calibrado = false;
 // MAC address: B0:B2:1C:A8:FF:B8
 uint8_t macBrazalete[] = {0xB0, 0xB2, 0x1C, 0xA8, 0xFF, 0xB8};
 
-// ====== ESTRUCTURA DE DATOS A ENVIAR ======
+// ====== ESTRUCTURA DE DATOS A ENVIAR POR ESP-NOW ======
 typedef struct __attribute__((packed)) {
   float cadencia;
   float presion;
@@ -31,8 +32,12 @@ typedef struct __attribute__((packed)) {
 
 TobilleraData dato;
 
-// Callback opcional para ver si el envío fue exitoso
-void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+// ====== CALLBACK DE ENVÍO (FIRMA NUEVA PARA TU CORE ESP32) ======
+// Antes era: void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
+// Ahora debe usar wifi_tx_info_t:
+void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  (void)info; // Para evitar warning si no usamos 'info'
+
   Serial.print("ESP-NOW envío -> ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "ÉXITO" : "FALLO");
 }
@@ -81,14 +86,16 @@ void setup() {
     return;
   }
 
-  // Registrar callback de envío (opcional)
+  // Registrar callback de envío
   esp_now_register_send_cb(onDataSent);
 
-  // Registrar al brazalete como peer (MISMO ESTILO QUE TU EJEMPLO)
-  esp_now_peer_info_t peer = {};
-  memcpy(peer.peer_addr, macBrazalete, 6);
-  // No configuramos channel ni encrypt para evitar incompatibilidades
-  if (esp_now_add_peer(&peer) != ESP_OK) {
+  // Registrar al brazalete como peer
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, macBrazalete, 6);
+  peerInfo.channel = 0;     // Canal por defecto
+  peerInfo.encrypt = false; // Sin cifrado
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("❌ Error añadiendo peer (brazalete)");
   } else {
     Serial.println("✅ Peer (brazalete) añadido a ESP-NOW");
