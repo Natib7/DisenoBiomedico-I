@@ -18,6 +18,7 @@ float altitudBase = 0;     // Altitud inicial (referencia)
 bool calibrado = false;
 
 // ====== MAC DEL BRAZALETE (RECEPTOR) ======
+// MAC address: B0:B2:1C:A8:FF:B8
 uint8_t macBrazalete[] = {0xB0, 0xB2, 0x1C, 0xA8, 0xFF, 0xB8};
 
 // ====== ESTRUCTURA DE DATOS A ENVIAR ======
@@ -30,15 +31,9 @@ typedef struct __attribute__((packed)) {
 
 TobilleraData dato;
 
-// Opcional: callback de envío para debug
+// Callback opcional para ver si el envío fue exitoso
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("ESP-NOW envío a ");
-  char macStr[18];
-  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac_addr[0], mac_addr[1], mac_addr[2],
-           mac_addr[3], mac_addr[4], mac_addr[5]);
-  Serial.print(macStr);
-  Serial.print(" -> ");
+  Serial.print("ESP-NOW envío -> ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "ÉXITO" : "FALLO");
 }
 
@@ -48,7 +43,7 @@ void setup() {
   pinMode(motorPin, OUTPUT);
   digitalWrite(motorPin, LOW);
 
-  Serial.println("🔧 Iniciando sensores...");
+  Serial.println("🔧 Iniciando sensores (tobillera)...");
 
   // --- Inicializar MPU6050 ---
   if (!mpu.begin()) {
@@ -89,13 +84,11 @@ void setup() {
   // Registrar callback de envío (opcional)
   esp_now_register_send_cb(onDataSent);
 
-  // Registrar al brazalete como peer
-  esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, macBrazalete, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+  // Registrar al brazalete como peer (MISMO ESTILO QUE TU EJEMPLO)
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, macBrazalete, 6);
+  // No configuramos channel ni encrypt para evitar incompatibilidades
+  if (esp_now_add_peer(&peer) != ESP_OK) {
     Serial.println("❌ Error añadiendo peer (brazalete)");
   } else {
     Serial.println("✅ Peer (brazalete) añadido a ESP-NOW");
