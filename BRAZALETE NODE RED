@@ -1,94 +1,131 @@
-#include <WiFi.h>
-#include <esp_now.h>
+#include <WiFi.h>          // Librería para manejar el WiFi en el ESP32
+#include <esp_now.h>       // Librería para comunicación ESP-NOW
 
-#include <Wire.h>
-#include "MAX30105.h"
-#include "heartRate.h"
+#include <Wire.h>          // Librería para bus I2C
+#include "MAX30105.h"      // Librería del sensor MAX3010x (MAX30102)
+#include "heartRate.h"     // Librería para detección de latidos
 
-#include <PubSubClient.h>
+#include <PubSubClient.h>  // Librería para comunicación MQTT
 
 // ---------------------------------------------------------------------------
-// CONFIGURACIÓN WiFi PARA MQTT (Node-RED)
+// CONFIGURACION WiFi PARA MQTT (Node-RED)
 // ---------------------------------------------------------------------------
+
+// Nombre de la red WiFi a la que se conectará el brazalete
 const char* ssid        = "ANIBAL";
+// Contraseña de la red WiFi
 const char* password    = "A1251098B";
 
+// Dirección del servidor MQTT (broker)
 const char* mqtt_server = "broker.emqx.io";
+// Puerto del broker MQTT (sin cifrado)
 const int   mqtt_port   = 1883;
 
+// Cliente TCP para WiFi
 WiFiClient espClient;
+// Cliente MQTT usando el cliente WiFi
 PubSubClient client(espClient);
 
+// Variable para almacenar el tiempo del último mensaje enviado por MQTT
 unsigned long lastMsg = 0;
+// Intervalo de envío de datos por MQTT en milisegundos
 const unsigned long intervaloEnvio = 2000; // 2 s entre publicaciones MQTT
 
 // ---------------------------------------------------------------------------
-// TÓPICOS MQTT (PON ESTOS MISMOS EN NODE-RED)
+// TOPICOS MQTT (LOS MISMOS QUE USAS EN NODE-RED)
 // ---------------------------------------------------------------------------
+
+// Frecuencia cardiaca
 const char* topic_heart_rate   = "wearable/heart_rate";
+// Variabilidad HRV SDNN
 const char* topic_hrv_sdnn     = "wearable/hrv_sdnn";
+// Saturación de oxígeno
 const char* topic_spo2         = "wearable/spo2";
+// Temperatura (piel/corporal)
 const char* topic_skin_temp    = "wearable/skin_temp";
 
+// Cadencia proveniente de la tobillera
 const char* topic_cadence      = "wearable/cadence";
+// Presión atmosférica (tobillera)
 const char* topic_pressure     = "wearable/pressure";
+// Altitud (tobillera)
 const char* topic_altitude     = "wearable/altitude";
+// Cambio de altitud (tobillera)
 const char* topic_delta_alt    = "wearable/delta_altitude";
 
 // ---------------------------------------------------------------------------
 // SENSORES DEL BRAZALETE (MAX30102 + LM35)
 // ---------------------------------------------------------------------------
+
+// Objeto para el sensor MAX3010x
 MAX30105 particleSensor;
 
+// Pin analógico donde está conectado el LM35
 const int LM35_PIN = 34;
 
-// Variables HR / HRV
-unsigned long lastBeat = 0;
-float beats[10];
-int beatIndex = 0;
+// Variables para cálculo de HR y HRV
+unsigned long lastBeat = 0; // Tiempo del último latido detectado
+float beats[10];            // Arreglo para guardar intervalos entre latidos
+int beatIndex = 0;          // Índice para el arreglo de beats
 
-// Últimos valores calculados (para enviar a MQTT)
-float lastBpm      = 0;
-float lastSdnn     = 0;
-float lastSpo2     = 0;
-float lastTempC    = 0;
+// Últimos valores calculados (se envían a MQTT)
+float lastBpm      = 0;     // Último valor de frecuencia cardiaca
+float lastSdnn     = 0;     // Último valor de HRV SDNN
+float lastSpo2     = 0;     // Último valor de SpO2 estimada
+float lastTempC    = 0;     // Último valor de temperatura
 
 // ---------------------------------------------------------------------------
 // DATOS QUE LLEGAN DE LA TOBILLERA (ESP-NOW)
 // ---------------------------------------------------------------------------
+
+// Estructura con los datos que envía la tobillera
 typedef struct __attribute__((packed)) {
-  float cadencia;
-  float presion;
-  float altitud;
-  float deltaAltitud;
+  float cadencia;       // Cadencia estimada (pasos por minuto)
+  float presion;        // Presión atmosférica (hPa)
+  float altitud;        // Altitud (m)
+  float deltaAltitud;   // Diferencia de altitud respecto a la base (m)
 } TobilleraData;
 
+// Variable donde se guarda el último paquete recibido de la tobillera
 volatile TobilleraData ultimoDatoTobillera;
+// Bandera que indica si hay datos nuevos de la tobillera
 volatile bool nuevoDatoTobillera = false;
 
 // ---------------------------------------------------------------------------
 // MODO DE FUNCIONAMIENTO: ESP-NOW <-> MQTT
 // ---------------------------------------------------------------------------
+
+// Enumeración para los modos de funcionamiento
 enum Mode {
-  MODE_ESPNOW = 0,
-  MODE_MQTT   = 1
+  MODE_ESPNOW = 0,   // Modo en que el brazalete recibe datos por ESP-NOW
+  MODE_MQTT   = 1    // Modo en que el brazalete se conecta a WiFi y envía por MQTT
 };
 
+// Variable que guarda el modo actual
 Mode currentMode = MODE_ESPNOW;
+// Tiempo en milisegundos en que se inició el modo actual
 unsigned long modeStartMillis = 0;
 
-// Ajusta estos tiempos a tu gusto:
-const unsigned long tiempoEspNow = 8000; // ms en modo ESP-NOW
-const unsigned long tiempoMqtt   = 5000; // ms en modo MQTT
+// Tiempos de permanencia en cada modo (en milisegundos)
+const unsigned long tiempoEspNow = 8000; // tiempo en modo ESP-NOW
+const unsigned long tiempoMqtt   = 5000; // tiempo en modo MQTT
 
 // ---------------------------------------------------------------------------
-// CALLBACK RECEPCIÓN ESP-NOW
+// CALLBACK RECEPCION ESP-NOW
 // ---------------------------------------------------------------------------
+
+// Función que se ejecuta cuando se recibe un paquete por ESP-NOW
+// info: información del remitente (no se usa aquí)
+// data: puntero a los datos recibidos
+// len:  tamaño de los datos recibidos en bytes
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  (void)info; // no usado de momento
+  (void)info; // para evitar advertencia de variable no usada
 
+  // Verifica que el tamaño del paquete coincida con la estructura esperada
   if (len == sizeof(TobilleraData)) {
+    // Copia los datos recibidos a la variable global
     memcpy((void*)&ultimoDatoTobillera, data, sizeof(TobilleraData));
+    // Marca que hay datos nuevos disponibles
     nuevoDatoTobillera = true;
   }
 }
@@ -96,188 +133,231 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 // ---------------------------------------------------------------------------
 // INICIALIZAR ESP-NOW (RECEPTOR)
 // ---------------------------------------------------------------------------
-void initEspNow() {
-  Serial.println("🔄 Inicializando ESP-NOW (modo receptor)...");
-  WiFi.mode(WIFI_STA);
 
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ Error iniciando ESP-NOW");
-    return;
+// Función para inicializar ESP-NOW como receptor
+void initEspNow() {
+  Serial.println("Inicializando ESP-NOW (modo receptor)...");
+  WiFi.mode(WIFI_STA);               // Coloca el WiFi en modo estación
+
+  if (esp_now_init() != ESP_OK) {    // Intenta iniciar ESP-NOW
+    Serial.println("Error iniciando ESP-NOW");
+    return;                          // Sale si hubo error
   }
+
+  // Registra la función callback para recepción de datos
   esp_now_register_recv_cb(onDataRecv);
-  Serial.println("✅ ESP-NOW listo (brazalete receptor).");
+  Serial.println("ESP-NOW listo (brazalete receptor).");
 }
 
+// Función para desactivar ESP-NOW
 void deinitEspNow() {
-  Serial.println("🔌 Desactivando ESP-NOW...");
-  esp_now_deinit();
+  Serial.println("Desactivando ESP-NOW...");
+  esp_now_deinit();                 // Desinicializa ESP-NOW
 }
 
 // ---------------------------------------------------------------------------
 // WiFi + MQTT (para Node-RED)
 // ---------------------------------------------------------------------------
+
+// Función para conectarse a la red WiFi y configurar el cliente MQTT
 void setup_wifi_mqtt() {
   Serial.println();
   Serial.print("Conectando a WiFi: ");
   Serial.println(ssid);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.mode(WIFI_STA);              // Modo estación
+  WiFi.begin(ssid, password);       // Inicia conexión con ssid y contraseña
 
+  // Bucle de espera hasta que se conecte al WiFi
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
 
   Serial.println();
-  Serial.println("✅ WiFi conectado");
+  Serial.println("WiFi conectado");
   Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
+  Serial.println(WiFi.localIP());   // Muestra la IP obtenida por DHCP
 
+  // Configura dirección y puerto del servidor MQTT
   client.setServer(mqtt_server, mqtt_port);
 }
 
+// Función para reconectarse al broker MQTT si se pierde la conexión
 void reconnect_mqtt() {
+  // Bucle hasta lograr la conexión
   while (!client.connected()) {
-    Serial.print("Intentando conexión MQTT... ");
+    Serial.print("Intentando conexion MQTT... ");
+    // Crea un identificador de cliente aleatorio
     String clientId = "ESP32-BRAZALETE-";
     clientId += String(random(0xffff), HEX);
 
+    // Intenta conectar al broker con ese clientId
     if (client.connect(clientId.c_str())) {
       Serial.println("Conectado al broker MQTT");
     } else {
-      Serial.print("falló, rc=");
-      Serial.print(client.state());
+      Serial.print("Fallo, rc=");
+      Serial.print(client.state());   // Código de error de MQTT
       Serial.println(" -> reintento en 3 s");
-      delay(3000);
+      delay(3000);                    // Espera 3 segundos antes de reintentar
     }
   }
 }
 
+// Función para desconectarse del broker MQTT y de la red WiFi
 void disconnect_mqtt() {
-  Serial.println("🔌 Desconectando MQTT y WiFi...");
-  client.disconnect();
-  WiFi.disconnect(true);
+  Serial.println("Desconectando MQTT y WiFi...");
+  client.disconnect();          // Desconecta del broker MQTT
+  WiFi.disconnect(true);        // Desconecta del WiFi
 }
 
 // ---------------------------------------------------------------------------
 // SETUP
 // ---------------------------------------------------------------------------
+
 void setup() {
-  Serial.begin(115200);
-  Wire.begin();
+  Serial.begin(115200);         // Inicia el puerto serie
+  Wire.begin();                 // Inicia bus I2C
 
   Serial.println("Iniciando sensores del brazalete...");
 
-  // MAX30102
+  // Inicialización del sensor MAX30102
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
-    Serial.println("❌ No se detecta el MAX30102. Verifica SDA/SCL.");
-    while (1);
+    Serial.println("No se detecta el MAX30102. Verifique SDA/SCL.");
+    while (1);                  // Si falla, queda en bucle infinito
   }
-  particleSensor.setup();
-  particleSensor.setPulseAmplitudeRed(0x1F);
-  particleSensor.setPulseAmplitudeIR(0x1F);
-  particleSensor.setPulseAmplitudeGreen(0);
 
-  Serial.println("✅ MAX30102 iniciado");
-  Serial.println("✅ LM35 listo en pin A34");
+  // Configuración básica del MAX30102
+  particleSensor.setup();                      // Configuración por defecto
+  particleSensor.setPulseAmplitudeRed(0x1F);   // Intensidad del LED rojo
+  particleSensor.setPulseAmplitudeIR(0x1F);    // Intensidad del LED infrarrojo
+  particleSensor.setPulseAmplitudeGreen(0);    // Apaga el LED verde
+
+  Serial.println("MAX30102 iniciado");
+  Serial.println("LM35 listo en pin A34");
   Serial.println("------------------------------------");
 
-  // Empezamos en modo ESP-NOW
-  initEspNow();
-  modeStartMillis = millis();
+  // Se comienza en modo ESP-NOW
+  initEspNow();                    // Inicia ESP-NOW como receptor
+  modeStartMillis = millis();      // Guarda el tiempo de inicio del modo actual
 }
 
 // ---------------------------------------------------------------------------
-// LECTURA Y CÁLCULO DE SEÑALES DEL BRAZALETE
+// LECTURA Y CALCULO DE SEÑALES DEL BRAZALETE
 // ---------------------------------------------------------------------------
+
 void leerSensoresBrazalete() {
+  // Lectura de valores IR y rojo del MAX30102
   long irValue  = particleSensor.getIR();
   long redValue = particleSensor.getRed();
 
-  // Detección de latidos
+  // Detección de latidos a partir de la señal IR
   if (checkForBeat(irValue)) {
-    unsigned long currentBeat = millis();
-    unsigned long delta = currentBeat - lastBeat;
-    lastBeat = currentBeat;
+    unsigned long currentBeat = millis();      // Tiempo actual
+    unsigned long delta = currentBeat - lastBeat; // Intervalo desde el último latido
+    lastBeat = currentBeat;                    // Actualiza tiempo del último latido
 
+    // Se filtran intervalos demasiado cortos o demasiado largos
     if (delta > 300 && delta < 2000) {
-      float bpm = 60.0 / (delta / 1000.0);
-      lastBpm = bpm;
+      float bpm = 60.0 / (delta / 1000.0);     // Calcula frecuencia cardiaca en bpm
+      lastBpm = bpm;                           // Guarda el último valor
 
-      Serial.print("❤️ Frecuencia cardíaca: ");
+      Serial.print("Frecuencia cardiaca: ");
       Serial.print(bpm);
       Serial.println(" bpm");
 
-      beats[beatIndex % 10] = delta;
-      beatIndex++;
+      beats[beatIndex % 10] = delta;           // Guarda intervalo en el arreglo
+      beatIndex++;                             // Avanza índice
     }
   }
 
-  // HRV (SDNN) cada 10 latidos válidos
+  // Cálculo de HRV (SDNN) cada 10 latidos válidos
   if (beatIndex >= 10) {
-    float mean = 0, sdnn = 0;
+    float mean = 0;
+    float sdnn = 0;
+
+    // Calcula la media de los intervalos
     for (int i = 0; i < 10; i++) mean += beats[i];
     mean /= 10;
-    for (int i = 0; i < 10; i++) sdnn += pow(beats[i] - mean, 2);
-    sdnn = sqrt(sdnn / 10);
-    lastSdnn = sdnn;
 
-    Serial.print("💓 HRV (SDNN): ");
+    // Calcula la varianza
+    for (int i = 0; i < 10; i++) sdnn += pow(beats[i] - mean, 2);
+    // Raíz cuadrada de la varianza para obtener SDNN
+    sdnn = sqrt(sdnn / 10);
+    lastSdnn = sdnn;             // Guarda último SDNN
+
+    Serial.print("HRV (SDNN): ");
     Serial.print(sdnn, 1);
     Serial.println(" ms");
 
-    beatIndex = 0;
+    beatIndex = 0;               // Reinicia el conteo de intervalos
   }
 
-  // SpO2 estimado
+  // Cálculo de SpO2 estimado
   if (irValue > 0) {
-    float ratio = (float)redValue / (float)irValue;
-    float spo2 = 110 - 25 * ratio;
-    if (spo2 > 100) spo2 = 100;
-    if (spo2 < 80)  spo2 = 80;
-    lastSpo2 = spo2;
+    float ratio = (float)redValue / (float)irValue; // Relación rojo / IR
+    float spo2 = 110 - 25 * ratio;                  // Fórmula empírica sencilla
+    if (spo2 > 100) spo2 = 100;                     // Limita valor máximo
+    if (spo2 < 80)  spo2 = 80;                      // Limita valor mínimo
+    lastSpo2 = spo2;                                // Guarda último valor
 
-    Serial.print("🩸 SpO₂ estimado: ");
+    Serial.print("SpO2 estimado: ");
     Serial.print(spo2, 1);
     Serial.println(" %");
   }
 
-  // Temperatura LM35
-  int raw = analogRead(LM35_PIN);
-  float voltage = (raw / 4095.0) * 3.3;
-  float tempC = voltage * 100.0;
-  lastTempC = tempC;
+  // Lectura de temperatura LM35
+  int raw = analogRead(LM35_PIN);                  // Lectura ADC (0-4095)
+  float voltage = (raw / 4095.0) * 3.3;            // Conversión a voltaje
+  float tempC = voltage * 100.0;                   // Conversión a grados Celsius
+  lastTempC = tempC;                               // Guarda último valor
 
-  Serial.print("🌡️ Temperatura corporal: ");
+  Serial.print("Temperatura corporal: ");
   Serial.print(tempC, 1);
-  Serial.println(" °C");
+  Serial.println(" C");
 
-  Serial.print("IR: ");   Serial.print(irValue);
-  Serial.print(" | Red: "); Serial.println(redValue);
+  Serial.print("IR: ");
+  Serial.print(irValue);
+  Serial.print(" | Red: ");
+  Serial.println(redValue);
 
-  // Datos de la tobillera si hay nuevos
+  // Si hay nuevos datos de la tobillera, se muestran
   if (nuevoDatoTobillera) {
-    nuevoDatoTobillera = false;
-    Serial.println("📡 Datos actualizados desde la tobillera:");
-    Serial.print("   Cadencia: ");      Serial.print(ultimoDatoTobillera.cadencia);      Serial.println(" pasos/min");
-    Serial.print("   Presión: ");       Serial.print(ultimoDatoTobillera.presion);       Serial.println(" hPa");
-    Serial.print("   Altitud: ");       Serial.print(ultimoDatoTobillera.altitud, 2);    Serial.println(" m");
-    Serial.print("   ΔAltitud: ");      Serial.print(ultimoDatoTobillera.deltaAltitud,2);Serial.println(" m");
+    nuevoDatoTobillera = false;   // Limpia bandera
+
+    Serial.println("Datos actualizados desde la tobillera:");
+    Serial.print("   Cadencia: ");
+    Serial.print(ultimoDatoTobillera.cadencia);
+    Serial.println(" pasos/min");
+
+    Serial.print("   Presion: ");
+    Serial.print(ultimoDatoTobillera.presion);
+    Serial.println(" hPa");
+
+    Serial.print("   Altitud: ");
+    Serial.print(ultimoDatoTobillera.altitud, 2);
+    Serial.println(" m");
+
+    Serial.print("   Delta Altitud: ");
+    Serial.print(ultimoDatoTobillera.deltaAltitud, 2);
+    Serial.println(" m");
   }
 
   Serial.println("------------------------------------");
 }
 
 // ---------------------------------------------------------------------------
-// ENVÍO DE DATOS A MQTT (Node-RED)
+// ENVIO DE DATOS A MQTT (Node-RED)
 // ---------------------------------------------------------------------------
-void enviarDatosMQTT() {
-  unsigned long now = millis();
-  if (now - lastMsg > intervaloEnvio) {
-    lastMsg = now;
 
-    // Convertimos a String
+void enviarDatosMQTT() {
+  unsigned long now = millis();                 // Tiempo actual
+
+  // Verifica si pasó el intervalo de envío
+  if (now - lastMsg > intervaloEnvio) {
+    lastMsg = now;                              // Actualiza tiempo del último envío
+
+    // Convierte los valores numéricos a cadenas de texto
     String heart_str  = String(lastBpm, 1);
     String hrv_str    = String(lastSdnn, 1);
     String spo2_str   = String(lastSpo2, 1);
@@ -288,7 +368,7 @@ void enviarDatosMQTT() {
     String alt_str    = String(ultimoDatoTobillera.altitud, 2);
     String dalt_str   = String(ultimoDatoTobillera.deltaAltitud, 2);
 
-    // Publicamos en cada tópico
+    // Publica cada valor en su tópico MQTT correspondiente
     client.publish(topic_heart_rate, heart_str.c_str());
     client.publish(topic_hrv_sdnn,   hrv_str.c_str());
     client.publish(topic_spo2,       spo2_str.c_str());
@@ -299,55 +379,58 @@ void enviarDatosMQTT() {
     client.publish(topic_altitude,   alt_str.c_str());
     client.publish(topic_delta_alt,  dalt_str.c_str());
 
-    // Monitor Serial
+    // Muestra en el monitor serie qué se envió
     Serial.println("----- Datos enviados a MQTT (Node-RED) -----");
     Serial.print("Heart Rate (bpm): "); Serial.println(heart_str);
     Serial.print("HRV SDNN (ms):   ");  Serial.println(hrv_str);
     Serial.print("SpO2 (%):        ");  Serial.println(spo2_str);
-    Serial.print("Temp (°C):       ");  Serial.println(temp_str);
+    Serial.print("Temp (C):        ");  Serial.println(temp_str);
 
     Serial.print("Cadencia:        ");  Serial.println(cad_str);
-    Serial.print("Presión (hPa):   ");  Serial.println(pres_str);
+    Serial.print("Presion (hPa):   ");  Serial.println(pres_str);
     Serial.print("Altitud (m):     ");  Serial.println(alt_str);
-    Serial.print("ΔAltitud (m):    ");  Serial.println(dalt_str);
+    Serial.print("Delta Altitud:   ");  Serial.println(dalt_str);
     Serial.println("-------------------------------------------");
   }
 }
 
 // ---------------------------------------------------------------------------
-// LOOP
+// LOOP PRINCIPAL
 // ---------------------------------------------------------------------------
+
 void loop() {
-  // Siempre seguimos leyendo los sensores del brazalete
+  // Siempre se leen los sensores del brazalete
   leerSensoresBrazalete();
 
-  unsigned long now = millis();
+  unsigned long now = millis();      // Tiempo actual
 
-  // Cambio de modo por tiempo
+  // Logica de cambio de modo segun el tiempo
   if (currentMode == MODE_ESPNOW) {
+    // Si ya pasó el tiempo programado para ESP-NOW
     if (now - modeStartMillis > tiempoEspNow) {
       // Cambiar a modo MQTT
-      deinitEspNow();
-      setup_wifi_mqtt();
-      currentMode = MODE_MQTT;
-      modeStartMillis = millis();
+      deinitEspNow();                // Apaga ESP-NOW
+      setup_wifi_mqtt();             // Conecta a WiFi y prepara MQTT
+      currentMode = MODE_MQTT;       // Cambia modo
+      modeStartMillis = millis();    // Reinicia contador de tiempo
     }
   } else { // MODE_MQTT
+    // Si ya pasó el tiempo programado para MQTT
     if (now - modeStartMillis > tiempoMqtt) {
       // Volver a modo ESP-NOW
-      disconnect_mqtt();
-      initEspNow();
-      currentMode = MODE_ESPNOW;
-      modeStartMillis = millis();
+      disconnect_mqtt();             // Desconecta MQTT y WiFi
+      initEspNow();                  // Vuelve a iniciar ESP-NOW
+      currentMode = MODE_ESPNOW;     // Cambia modo
+      modeStartMillis = millis();    // Reinicia contador de tiempo
     } else {
-      // Mientras estamos en MQTT, mantenemos conexión y publicamos
-      if (!client.connected()) {
-        reconnect_mqtt();
+      // Mientras estamos en modo MQTT, hay que mantener la conexión y publicar
+      if (!client.connected()) {     // Si no está conectado al broker
+        reconnect_mqtt();            // Intenta reconectar
       }
-      client.loop();
-      enviarDatosMQTT();
+      client.loop();                 // Mantiene viva la conexión MQTT
+      enviarDatosMQTT();             // Envía datos a MQTT periódicamente
     }
   }
 
-  delay(200);  // Pequeño delay para no saturar
+  delay(200);                        // Pequeño retardo para no saturar la CPU
 }
